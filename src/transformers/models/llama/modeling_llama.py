@@ -49,7 +49,6 @@ from ...utils import (
 )
 from .configuration_llama import LlamaConfig
 
-
 if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
     from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
@@ -343,7 +342,9 @@ class LlamaAttention(nn.Module):
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+        assert query_states.shape == torch.Size((bsz, self.num_heads, q_len, self.head_dim)), f'incorrect query_states shape: {query_states.shape}'
+        assert key_states.shape == torch.Size((bsz, self.num_heads, key_states.shape[-2], self.head_dim)), f'incorrect key_states_states shape: {key_states.shape}'
+        attn_weights = torch.einsum('bnsh,bnkh->bnsk', query_states, key_states) / math.sqrt(self.head_dim) 
 
         if attention_mask is not None:  # no matter the length, we just slice it
             causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
@@ -352,7 +353,10 @@ class LlamaAttention(nn.Module):
         # upcast attention to fp32
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
         attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
-        attn_output = torch.matmul(attn_weights, value_states)
+        assert attn_weights.shape == torch.Size((bsz, self.num_heads, q_len, key_states.shape[-2])), f'incorrect atten_weight shape: {attn_weights.shape}'
+        assert value_states.shape == torch.Size((bsz, self.num_heads, key_states.shape[-2], self.head_dim)), f'incorrect value_states shape: {value_states.shape}'
+        attn_output = torch.einsum('bnsk,bnkh->bnsh', attn_weights, value_states)
+
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
             raise ValueError(
