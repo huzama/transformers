@@ -378,10 +378,6 @@ class LlamaAttention(nn.Module):
         assert value_states.shape == torch.Size((bsz, self.num_heads, key_states.shape[-2], self.head_dim)), f'incorrect value_states shape: {value_states.shape}'
         attn_output = torch.einsum('bnsk,bnkh->bnsh', attn_weights, value_states)
 
-        if xs.get_global_mesh() is not None:
-            xs.mark_sharding(attn_output, xs.get_global_mesh(), ("data", None, "model"))
-
-
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
             raise ValueError(
                 f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
@@ -401,6 +397,9 @@ class LlamaAttention(nn.Module):
 
         if not output_attentions:
             attn_weights = None
+
+        if xs.get_global_mesh() is not None:
+            xs.mark_sharding(attn_output, xs.get_global_mesh(), ("data", None, "model"))
 
         return attn_output, attn_weights, past_key_value
 
