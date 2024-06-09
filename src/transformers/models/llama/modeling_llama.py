@@ -25,6 +25,7 @@ from typing import List, Optional, Tuple, Union
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
+import torch_xla.distributed.spmd as xs
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
@@ -212,7 +213,18 @@ class LlamaMLP(nn.Module):
             ]
             down_proj = sum(down_proj)
         else:
-            down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+            up_proj = self.up_proj(x)
+            gate_proj = self.act_fn(self.gate_proj(x))
+
+            if xs.get_global_mesh() is not None:
+                xs.mark_sharding(up_proj, xs.get_global_mesh(), ("data", None, "model"))
+                xs.mark_sharding(gate_proj, xs.get_global_mesh(), ("data", None, "model"))
+
+            down_proj = self.down_proj(gate_proj*self.up_proj(x))
+
+            if xs.get_global_mesh() is not None:
+                xs.mark_sharding(down_proj, xs.get_global_mesh(), ("data", None, "model"))
+            
 
         return down_proj
 
@@ -331,6 +343,11 @@ class LlamaAttention(nn.Module):
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
+        if xs.get_global_mesh() is not None:
+            xs.mark_sharding(query_states, xs.get_global_mesh(), ("data", None, "model"))
+            xs.mark_sharding(key_states, xs.get_global_mesh(), ("data", None, "model"))
+            xs.mark_sharding(value_states, xs.get_global_mesh(), ("data", None, "model"))
+
         cos, sin = self.rotary_emb(value_states, position_ids)
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
@@ -346,6 +363,9 @@ class LlamaAttention(nn.Module):
         assert key_states.shape == torch.Size((bsz, self.num_heads, key_states.shape[-2], self.head_dim)), f'incorrect key_states_states shape: {key_states.shape}'
         attn_weights = torch.einsum('bnsh,bnkh->bnsk', query_states, key_states) / math.sqrt(self.head_dim) 
 
+        if xs.get_global_mesh() is not None:
+            xs.mark_sharding(attn_weights, xs.get_global_mesh(), ("data", "model", None, None))
+
         if attention_mask is not None:  # no matter the length, we just slice it
             causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
             attn_weights = attn_weights + causal_mask
@@ -356,6 +376,9 @@ class LlamaAttention(nn.Module):
         assert attn_weights.shape == torch.Size((bsz, self.num_heads, q_len, key_states.shape[-2])), f'incorrect atten_weight shape: {attn_weights.shape}'
         assert value_states.shape == torch.Size((bsz, self.num_heads, key_states.shape[-2], self.head_dim)), f'incorrect value_states shape: {value_states.shape}'
         attn_output = torch.einsum('bnsk,bnkh->bnsh', attn_weights, value_states)
+
+        if xs.get_global_mesh() is not None:
+            xs.mark_sharding(attn_output, xs.get_global_mesh(), ("data", None, "model"))
 
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
@@ -928,6 +951,10 @@ class LlamaModel(LlamaPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
+        if xs.get_global_mesh() is not None:
+            xs.mark_sharding(inputs_embeds, xs.get_global_mesh(), ("data", None, "model"))
+        
+
         return_legacy_cache = False
         if use_cache and not isinstance(past_key_values, Cache):  # kept for BC (non `Cache` `past_key_values` inputs)
             return_legacy_cache = True
@@ -1186,6 +1213,9 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         else:
             logits = self.lm_head(hidden_states)
         logits = logits.float()
+
+        if xs.get_global_mesh() is not None:
+            xs.mark_sharding(logits, xs.get_global_mesh(), ("data", None, "model"))
 
         loss = None
         if labels is not None:
