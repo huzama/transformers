@@ -217,13 +217,13 @@ class LlamaMLP(nn.Module):
             gate_proj = self.act_fn(self.gate_proj(x))
 
             if xs.get_global_mesh() is not None:
-                xs.mark_sharding(up_proj, xs.get_global_mesh(), ("data", None, "model"))
-                xs.mark_sharding(gate_proj, xs.get_global_mesh(), ("data", None, "model"))
+                xs.mark_sharding(up_proj, xs.get_global_mesh(), ("fsdp", None, "model"))
+                xs.mark_sharding(gate_proj, xs.get_global_mesh(), ("fsdp", None, "model"))
 
             down_proj = self.down_proj(gate_proj*self.up_proj(x))
 
             if xs.get_global_mesh() is not None:
-                xs.mark_sharding(down_proj, xs.get_global_mesh(), ("data", None, "model"))
+                xs.mark_sharding(down_proj, xs.get_global_mesh(), ("fsdp", None, "model"))
             
 
         return down_proj
@@ -340,9 +340,9 @@ class LlamaAttention(nn.Module):
             value_states = self.v_proj(hidden_states)
 
         if xs.get_global_mesh() is not None:
-            xs.mark_sharding(query_states, xs.get_global_mesh(), ("data", None, "model"))
-            xs.mark_sharding(key_states, xs.get_global_mesh(), ("data", None, "model"))
-            xs.mark_sharding(value_states, xs.get_global_mesh(), ("data", None, "model"))
+            xs.mark_sharding(query_states, xs.get_global_mesh(), ("fsdp", None, "model"))
+            xs.mark_sharding(key_states, xs.get_global_mesh(), ("fsdp", None, "model"))
+            xs.mark_sharding(value_states, xs.get_global_mesh(), ("fsdp", None, "model"))
             
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
@@ -365,7 +365,7 @@ class LlamaAttention(nn.Module):
         attn_weights = torch.einsum('bnsh,bnkh->bnsk', query_states, key_states) / math.sqrt(self.head_dim) 
 
         if xs.get_global_mesh() is not None:
-            xs.mark_sharding(attn_weights, xs.get_global_mesh(), ("data", "model", None, None))
+            xs.mark_sharding(attn_weights, xs.get_global_mesh(), ("fsdp", "model", None, None))
 
         if attention_mask is not None:  # no matter the length, we just slice it
             causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
@@ -399,7 +399,7 @@ class LlamaAttention(nn.Module):
             attn_weights = None
 
         if xs.get_global_mesh() is not None:
-            xs.mark_sharding(attn_output, xs.get_global_mesh(), ("data", None, "model"))
+            xs.mark_sharding(attn_output, xs.get_global_mesh(), ("fsdp", None, "model"))
 
         return attn_output, attn_weights, past_key_value
 
@@ -952,7 +952,7 @@ class LlamaModel(LlamaPreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         if xs.get_global_mesh() is not None:
-            xs.mark_sharding(inputs_embeds, xs.get_global_mesh(), ("data", None, "model"))
+            xs.mark_sharding(inputs_embeds, xs.get_global_mesh(), ("fsdp", None, "model"))
         
 
         return_legacy_cache = False
@@ -1215,7 +1215,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         logits = logits.float()
 
         if xs.get_global_mesh() is not None:
-            xs.mark_sharding(logits, xs.get_global_mesh(), ("data", None, "model"))
+            xs.mark_sharding(logits, xs.get_global_mesh(), ("fsdp", None, "model"))
 
         loss = None
         if labels is not None:
